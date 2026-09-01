@@ -16,6 +16,9 @@ CLI для керування таргетованою рекламою у **Fac
   посилання з реклами — фіксує джерело трафіку (`?start=fb_ads` / `?start=ig_ads`)
   і показує конверсію через `/traffic`. Замикає весь цикл перевірки в межах цього
   ж проєкту, без залежності від сторонніх ботів.
+- **Керування рекламою прямо з Telegram** (`/ads_help` у тому ж боті): та сама
+  функціональність, що й CLI нижче (кампанії, ad set'и, креативи, оголошення,
+  аналітика), але командами в чаті замість терміналу — зручно керувати з телефону.
 
 Усе, що створюється цим інструментом, за замовчуванням має статус **PAUSED** —
 показ не почнеться, доки ви свідомо не активуєте кампанію (`--active` або
@@ -149,6 +152,41 @@ python -m landing_bot
 Саме на цей бот і мають вести посилання, які ви вказуєте в `ad create-creative --link`
 при створенні реклами через CLI вище.
 
+### Керування рекламою з Telegram (той самий бот)
+
+Той самий бот, крім прийому трафіку, вміє й керувати рекламою — обгортка над
+`meta_ads` з попереднього розділу, викликана командами замість CLI. Потребує
+тих самих `META_*` змінних у `.env`, що й CLI (без них команди відповідають
+зрозумілим попередженням, а не падають).
+
+Формат багатоаргументних команд — через `` | `` (вертикальну риску), бо назви
+кампаній/ad set'ів можуть містити пробіли:
+
+```
+/ads_help — повний список команд
+
+/campaign_new Промо бота | 10        — створити кампанію (PAUSED), $10/день
+/campaigns                            — список кампаній
+/campaign_pause 123456
+/campaign_resume 123456
+
+/adset_new 123456 | UA 18-45 | 10 | UA,PL   — campaign_id | назва | бюджет | країни
+/adsets 123456                        — список ad set'ів кампанії
+/adset_pause 789012
+/adset_resume 789012
+
+/creative_new https://t.me/trafficbot?start=fb_ads | Текст оголошення | Заголовок
+                                       — можна прикріпити фото до цього ж повідомлення
+/ad_new 789012 | 345678 | Оголошення 1  — adset_id | creative_id | назва
+/ad_pause 999
+/ad_resume 999
+
+/insights 123456 adset last_30d       — object_id [campaign|adset|ad] [date_preset]
+```
+
+Усе так само створюється зі статусом **PAUSED** — `*_resume` вмикає показ свідомо.
+Доступ до цих команд — лише для `ADMIN_IDS`, як і `/traffic`.
+
 ## Деплой лендинг-бота на постійний хостинг (Railway)
 
 `landing_bot` — єдина частина проєкту, яка має працювати безперервно (CLI `meta_ads`
@@ -160,6 +198,9 @@ python -m landing_bot
 3. **Variables** → додайте:
    - `LANDING_BOT_TOKEN` — токен бота з @BotFather
    - `ADMIN_IDS` — ваш tg_id (через кому, якщо декілька)
+   - за бажанням також `META_APP_ID`, `META_APP_SECRET`, `META_ACCESS_TOKEN`,
+     `META_AD_ACCOUNT_ID`, `META_PAGE_ID` — щоб команди `/campaign_new` тощо
+     працювали і на задеплоєному боті, не лише локально
 4. **Settings → Volumes** → додайте volume, змонтований у `/app/data` — інакше
    `data/landing.db` (список користувачів і джерел) обнулиться при кожному релої
 5. Deploy. У логах має з'явитись `Лендинг-бот запускається...` без помилок
@@ -188,9 +229,10 @@ meta_ads/
 └── cli.py         # Typer CLI
 
 landing_bot/
-├── config.py      # LANDING_BOT_TOKEN, ADMIN_IDS
-├── db.py          # SQLite: users + acquisition_source
-└── bot.py         # /start (фіксує джерело), /traffic (статистика)
+├── config.py        # LANDING_BOT_TOKEN, ADMIN_IDS
+├── db.py            # SQLite: users + acquisition_source
+├── ads_commands.py  # /campaign_new, /adset_new, /creative_new, /ad_new, /insights — обгортка над meta_ads
+└── bot.py           # /start (фіксує джерело), /traffic (статистика), підключає ads_commands
 ```
 
 ## Застереження

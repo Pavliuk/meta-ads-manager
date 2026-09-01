@@ -16,12 +16,14 @@ from aiogram.types import Message
 from tabulate import tabulate
 
 from landing_bot import db
+from landing_bot.ads_commands import router as ads_router
 from landing_bot.config import load_config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
 
 dp = Dispatcher()
+dp.include_router(ads_router)
 
 
 @dp.message(CommandStart())
