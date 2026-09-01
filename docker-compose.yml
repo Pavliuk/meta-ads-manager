@@ -1,0 +1,11 @@
+version: "3.9"
+
+services:
+  landing-bot:
+    build: .
+    container_name: meta-ads-landing-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data   # зберігає data/landing.db поза контейнером

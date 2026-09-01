@@ -149,6 +149,31 @@ python -m landing_bot
 Саме на цей бот і мають вести посилання, які ви вказуєте в `ad create-creative --link`
 при створенні реклами через CLI вище.
 
+## Деплой лендинг-бота на постійний хостинг (Railway)
+
+`landing_bot` — єдина частина проєкту, яка має працювати безперервно (CLI `meta_ads`
+запускається вручну, коли потрібно). Деплоїться так само, як типовий Docker-сервіс.
+
+1. Зайдіть на https://railway.app/ → **New Project** → **Deploy from GitHub repo**
+2. Оберіть репозиторій `meta-ads-manager` — Railway сам підхопить `Dockerfile`
+   і `railway.json` з корня репо (Docker-білд, автоперезапуск при падінні)
+3. **Variables** → додайте:
+   - `LANDING_BOT_TOKEN` — токен бота з @BotFather
+   - `ADMIN_IDS` — ваш tg_id (через кому, якщо декілька)
+4. **Settings → Volumes** → додайте volume, змонтований у `/app/data` — інакше
+   `data/landing.db` (список користувачів і джерел) обнулиться при кожному релої
+5. Deploy. У логах має з'явитись `Лендинг-бот запускається...` без помилок
+
+Подальші `git push` в `main` автоматично тригерять редеплой (Railway стежить за репо).
+
+### Локально через Docker (альтернатива Railway)
+
+```bash
+cp .env.example .env   # заповніть LANDING_BOT_TOKEN, ADMIN_IDS
+docker compose up -d --build
+docker compose logs -f
+```
+
 ## Структура проєкту
 
 ```
