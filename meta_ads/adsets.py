@@ -47,3 +47,20 @@ def set_ad_set_status(ad_set_id: str, status: str) -> AdSet:
     ad_set = AdSet(ad_set_id)
     ad_set.api_update(params={AdSet.Field.status: status})
     return ad_set
+
+
+def update_ad_set(
+    ad_set_id: str,
+    name: str | None = None,
+    daily_budget_cents: int | None = None,
+) -> AdSet:
+    """Змінює назву та/або денний бюджет наявного ad set'а."""
+    params = {}
+    if name is not None:
+        params[AdSet.Field.name] = name
+    if daily_budget_cents is not None:
+        params[AdSet.Field.daily_budget] = daily_budget_cents
+    ad_set = AdSet(ad_set_id)
+    if params:
+        ad_set.api_update(params=params)
+    return ad_set

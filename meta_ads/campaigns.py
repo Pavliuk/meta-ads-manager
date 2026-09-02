@@ -58,3 +58,20 @@ def set_campaign_status(campaign_id: str, status: str) -> Campaign:
     campaign = Campaign(campaign_id)
     campaign.api_update(params={Campaign.Field.status: status})
     return campaign
+
+
+def update_campaign(
+    campaign_id: str,
+    name: str | None = None,
+    daily_budget_cents: int | None = None,
+) -> Campaign:
+    """Змінює назву та/або денний бюджет наявної кампанії."""
+    params = {}
+    if name is not None:
+        params[Campaign.Field.name] = name
+    if daily_budget_cents is not None:
+        params[Campaign.Field.daily_budget] = daily_budget_cents
+    campaign = Campaign(campaign_id)
+    if params:
+        campaign.api_update(params=params)
+    return campaign

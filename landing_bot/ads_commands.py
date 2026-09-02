@@ -1,9 +1,10 @@
 """Кнопкове (inline-keyboard) керування рекламою Facebook/Instagram з Telegram.
 
 Той самий Meta Marketing API, що й `python -m meta_ads`, тільки через меню
-замість команд із синтаксисом. Створення кампанії / ad set'а / оголошення —
-короткий покроковий діалог (FSM): бот питає одне поле за раз, з кнопкою
-«Скасувати» на кожному кроці.
+замість команд із синтаксисом. Створення/редагування/видалення кампанії,
+ad set'а чи оголошення — короткий покроковий діалог (FSM): бот питає одне
+поле за раз, з кнопкою «Скасувати» на кожному кроці; видалення — з окремим
+підтвердженням.
 
 Потребує META_APP_ID/META_APP_SECRET/META_ACCESS_TOKEN/META_AD_ACCOUNT_ID
 (і META_PAGE_ID для оголошень) у .env — без них дії повертають зрозуміле
@@ -23,6 +24,7 @@ from facebook_business.exceptions import FacebookRequestError
 from tabulate import tabulate
 
 from meta_ads import adsets, ads, campaigns, insights, targeting
+from meta_ads.campaigns import OBJECTIVES
 from meta_ads.config import load_config as load_meta_config
 
 router = Router(name="ads_commands")
@@ -30,13 +32,36 @@ logger = logging.getLogger(__name__)
 
 DATE_PRESETS = ("today", "last_7d", "last_30d", "last_90d")
 
+OBJECTIVE_LABELS = {
+    "OUTCOME_TRAFFIC": "🔗 Трафік",
+    "OUTCOME_ENGAGEMENT": "💬 Взаємодія",
+    "OUTCOME_LEADS": "🎯 Ліди",
+    "OUTCOME_AWARENESS": "📢 Охоплення",
+    "OUTCOME_SALES": "💰 Конверсії",
+    "OUTCOME_APP_PROMOTION": "📱 Застосунок",
+}
+
+GENDER_LABELS = {"all": "👥 Всі", "male": "👨 Чоловіки", "female": "👩 Жінки"}
+PLATFORM_LABELS = {"both": "📘📷 FB + IG", "facebook": "📘 Тільки Facebook", "instagram": "📷 Тільки Instagram"}
+
 
 class AdsFlow(StatesGroup):
     campaign_name = State()
     campaign_budget = State()
+    campaign_objective = State()
+    campaign_edit_name = State()
+    campaign_edit_budget = State()
+
     adset_name = State()
     adset_budget = State()
     adset_countries = State()
+    adset_age_min = State()
+    adset_age_max = State()
+    adset_gender = State()
+    adset_platforms = State()
+    adset_edit_name = State()
+    adset_edit_budget = State()
+
     ad_link = State()
     ad_message = State()
     ad_headline = State()
@@ -85,6 +110,22 @@ async def _meta_call(send, func, /, *args, **kwargs):
 
 def _status_icon(status: str) -> str:
     return "🟢" if status == "ACTIVE" else "⏸️"
+
+
+def _parse_budget(text: str) -> float | None:
+    try:
+        value = float((text or "").replace(",", "."))
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _parse_age(text: str) -> int | None:
+    try:
+        value = int((text or "").strip())
+    except ValueError:
+        return None
+    return value if 13 <= value <= 65 else None
 
 
 # ---------- Головне меню ----------
@@ -159,6 +200,7 @@ async def _render_campaign_detail(callback: CallbackQuery, campaign_id: str):
     text = (
         f"<b>{campaign['name']}</b>\n"
         f"Статус: {campaign['status']}\n"
+        f"Ціль: {campaign.get('objective') or '—'}\n"
         f"Бюджет/день: {campaign.get('daily_budget') or '—'}"
     )
     kb = InlineKeyboardBuilder()
@@ -168,6 +210,8 @@ async def _render_campaign_detail(callback: CallbackQuery, campaign_id: str):
         kb.button(text="▶️ Запустити", callback_data=f"ads:camp_resume:{campaign_id}")
     kb.button(text="🎯 Ad sets", callback_data=f"ads:adsets:{campaign_id}")
     kb.button(text="📊 Аналітика", callback_data=f"ads:insights:{campaign_id}")
+    kb.button(text="✏️ Редагувати", callback_data=f"ads:camp_edit:{campaign_id}")
+    kb.button(text="🗑 Видалити", callback_data=f"ads:camp_del_ask:{campaign_id}")
     kb.button(text="🔙 До списку", callback_data="ads:camps")
     kb.adjust(1)
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
@@ -199,6 +243,120 @@ async def cb_campaign_toggle(callback: CallbackQuery, admin_ids: list[int]):
     await _render_campaign_detail(callback, campaign_id)
 
 
+# --- Видалення кампанії ---
+
+@router.callback_query(F.data.startswith("ads:camp_del_ask:"))
+async def cb_campaign_delete_ask(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    campaign_id = callback.data.split(":")[2]
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Так, видалити", callback_data=f"ads:camp_del:{campaign_id}")
+    kb.button(text="❌ Ні", callback_data=f"ads:camp:{campaign_id}")
+    kb.adjust(1)
+    await callback.message.edit_text(
+        "⚠️ Видалити цю кампанію разом з усіма її ad set'ами й оголошеннями? Це незворотньо.",
+        reply_markup=kb.as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ads:camp_del:"))
+async def cb_campaign_delete(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    campaign_id = callback.data.split(":")[2]
+
+    async def send(text):
+        await callback.answer(text, show_alert=True)
+
+    result = await _meta_call(send, campaigns.set_campaign_status, campaign_id, "DELETED")
+    if result is None:
+        return
+    await callback.answer("🗑 Видалено")
+    await _render_campaigns(callback)
+
+
+# --- Редагування кампанії ---
+
+@router.callback_query(F.data.startswith("ads:camp_edit:"))
+async def cb_campaign_edit_menu(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    campaign_id = callback.data.split(":")[2]
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Назва", callback_data=f"ads:camp_edit_name:{campaign_id}")
+    kb.button(text="💰 Бюджет", callback_data=f"ads:camp_edit_budget:{campaign_id}")
+    kb.button(text="🔙 Назад", callback_data=f"ads:camp:{campaign_id}")
+    kb.adjust(1)
+    await callback.message.edit_text("Що редагувати?", reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ads:camp_edit_name:"))
+async def cb_campaign_edit_name_ask(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    campaign_id = callback.data.split(":")[2]
+    await state.update_data(edit_campaign_id=campaign_id)
+    await state.set_state(AdsFlow.campaign_edit_name)
+    await callback.message.edit_text("Нова назва кампанії:", reply_markup=_cancel_kb())
+    await callback.answer()
+
+
+@router.message(AdsFlow.campaign_edit_name)
+async def fsm_campaign_edit_name(message: Message, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(message.from_user, admin_ids):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Назва не може бути порожньою. Спробуйте ще раз:", reply_markup=_cancel_kb())
+        return
+    data = await state.get_data()
+    campaign_id = data["edit_campaign_id"]
+    await state.clear()
+
+    async def send(text):
+        await message.answer(text, reply_markup=_menu_kb())
+
+    result = await _meta_call(send, campaigns.update_campaign, campaign_id, name=name)
+    if result:
+        await message.answer("✅ Назву оновлено.", reply_markup=_menu_kb())
+
+
+@router.callback_query(F.data.startswith("ads:camp_edit_budget:"))
+async def cb_campaign_edit_budget_ask(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    campaign_id = callback.data.split(":")[2]
+    await state.update_data(edit_campaign_id=campaign_id)
+    await state.set_state(AdsFlow.campaign_edit_budget)
+    await callback.message.edit_text("Новий денний бюджет у $ (число, напр. 10):", reply_markup=_cancel_kb())
+    await callback.answer()
+
+
+@router.message(AdsFlow.campaign_edit_budget)
+async def fsm_campaign_edit_budget(message: Message, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(message.from_user, admin_ids):
+        return
+    budget = _parse_budget(message.text)
+    if budget is None:
+        await message.answer("Бюджет має бути додатним числом, напр. 10. Спробуйте ще раз:", reply_markup=_cancel_kb())
+        return
+    data = await state.get_data()
+    campaign_id = data["edit_campaign_id"]
+    await state.clear()
+
+    async def send(text):
+        await message.answer(text, reply_markup=_menu_kb())
+
+    result = await _meta_call(send, campaigns.update_campaign, campaign_id, daily_budget_cents=int(round(budget * 100)))
+    if result:
+        await message.answer("✅ Бюджет оновлено.", reply_markup=_menu_kb())
+
+
+# --- Створення кампанії (назва → бюджет → ціль) ---
+
 @router.callback_query(F.data == "ads:new_campaign")
 async def cb_new_campaign(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
     if not _is_admin(callback.from_user, admin_ids):
@@ -225,25 +383,40 @@ async def fsm_campaign_name(message: Message, state: FSMContext, admin_ids: list
 async def fsm_campaign_budget(message: Message, state: FSMContext, admin_ids: list[int]):
     if not _is_admin(message.from_user, admin_ids):
         return
-    try:
-        budget = float((message.text or "").replace(",", "."))
-        if budget <= 0:
-            raise ValueError
-    except ValueError:
+    budget = _parse_budget(message.text)
+    if budget is None:
         await message.answer("Бюджет має бути додатним числом, напр. 10. Спробуйте ще раз:", reply_markup=_cancel_kb())
         return
+    await state.update_data(campaign_budget=budget)
+    await state.set_state(AdsFlow.campaign_objective)
+    kb = InlineKeyboardBuilder()
+    for obj in OBJECTIVES:
+        kb.button(text=OBJECTIVE_LABELS[obj], callback_data=f"ads:obj:{obj}")
+    kb.button(text="❌ Скасувати", callback_data="ads:cancel")
+    kb.adjust(2, 2, 2, 1)
+    await message.answer("Оберіть ціль кампанії:", reply_markup=kb.as_markup())
+
+
+@router.callback_query(AdsFlow.campaign_objective, F.data.startswith("ads:obj:"))
+async def cb_campaign_objective(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    objective = callback.data.split(":")[2]
     data = await state.get_data()
     name = data["campaign_name"]
+    budget = data["campaign_budget"]
     await state.clear()
+    await callback.answer()
 
     async def send(text):
-        await message.answer(text, reply_markup=_menu_kb())
+        await callback.message.edit_text(text, reply_markup=_menu_kb())
 
     campaign = await _meta_call(
-        send, campaigns.create_campaign, name=name, daily_budget_cents=int(round(budget * 100))
+        send, campaigns.create_campaign,
+        name=name, objective=objective, daily_budget_cents=int(round(budget * 100)),
     )
     if campaign:
-        await message.answer(
+        await callback.message.edit_text(
             f"✅ Кампанія «{name}» створена, id=<code>{campaign['id']}</code>, статус PAUSED.",
             reply_markup=_menu_kb(),
         )
@@ -299,7 +472,10 @@ async def _render_adset_detail(callback: CallbackQuery, adset_id: str, campaign_
         kb.button(text="⏸️ Пауза", callback_data=f"ads:adset_pause:{adset_id}:{campaign_id}")
     else:
         kb.button(text="▶️ Запустити", callback_data=f"ads:adset_resume:{adset_id}:{campaign_id}")
-    kb.button(text="➕ Оголошення", callback_data=f"ads:new_ad:{adset_id}:{campaign_id}")
+    kb.button(text="📋 Оголошення", callback_data=f"ads:adlist:{adset_id}:{campaign_id}")
+    kb.button(text="➕ Нове оголошення", callback_data=f"ads:new_ad:{adset_id}:{campaign_id}")
+    kb.button(text="✏️ Редагувати", callback_data=f"ads:adset_edit:{adset_id}:{campaign_id}")
+    kb.button(text="🗑 Видалити", callback_data=f"ads:adset_del_ask:{adset_id}:{campaign_id}")
     kb.button(text="🔙 Назад", callback_data=f"ads:adsets:{campaign_id}")
     kb.adjust(1)
     await callback.message.edit_text(text, reply_markup=kb.as_markup())
@@ -331,6 +507,120 @@ async def cb_adset_toggle(callback: CallbackQuery, admin_ids: list[int]):
     await _render_adset_detail(callback, adset_id, campaign_id)
 
 
+# --- Видалення ad set'а ---
+
+@router.callback_query(F.data.startswith("ads:adset_del_ask:"))
+async def cb_adset_delete_ask(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, adset_id, campaign_id = callback.data.split(":")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Так, видалити", callback_data=f"ads:adset_del:{adset_id}:{campaign_id}")
+    kb.button(text="❌ Ні", callback_data=f"ads:adset:{adset_id}:{campaign_id}")
+    kb.adjust(1)
+    await callback.message.edit_text(
+        "⚠️ Видалити цей ad set разом з усіма його оголошеннями? Це незворотньо.",
+        reply_markup=kb.as_markup(),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ads:adset_del:"))
+async def cb_adset_delete(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, adset_id, campaign_id = callback.data.split(":")
+
+    async def send(text):
+        await callback.answer(text, show_alert=True)
+
+    result = await _meta_call(send, adsets.set_ad_set_status, adset_id, "DELETED")
+    if result is None:
+        return
+    await callback.answer("🗑 Видалено")
+    await _render_adsets(callback, campaign_id)
+
+
+# --- Редагування ad set'а ---
+
+@router.callback_query(F.data.startswith("ads:adset_edit:"))
+async def cb_adset_edit_menu(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, adset_id, campaign_id = callback.data.split(":")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✏️ Назва", callback_data=f"ads:adset_edit_name:{adset_id}:{campaign_id}")
+    kb.button(text="💰 Бюджет", callback_data=f"ads:adset_edit_budget:{adset_id}:{campaign_id}")
+    kb.button(text="🔙 Назад", callback_data=f"ads:adset:{adset_id}:{campaign_id}")
+    kb.adjust(1)
+    await callback.message.edit_text("Що редагувати?", reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ads:adset_edit_name:"))
+async def cb_adset_edit_name_ask(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, adset_id, campaign_id = callback.data.split(":")
+    await state.update_data(edit_adset_id=adset_id, edit_adset_campaign_id=campaign_id)
+    await state.set_state(AdsFlow.adset_edit_name)
+    await callback.message.edit_text("Нова назва ad set'а:", reply_markup=_cancel_kb())
+    await callback.answer()
+
+
+@router.message(AdsFlow.adset_edit_name)
+async def fsm_adset_edit_name(message: Message, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(message.from_user, admin_ids):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Назва не може бути порожньою. Спробуйте ще раз:", reply_markup=_cancel_kb())
+        return
+    data = await state.get_data()
+    adset_id = data["edit_adset_id"]
+    await state.clear()
+
+    async def send(text):
+        await message.answer(text, reply_markup=_menu_kb())
+
+    result = await _meta_call(send, adsets.update_ad_set, adset_id, name=name)
+    if result:
+        await message.answer("✅ Назву оновлено.", reply_markup=_menu_kb())
+
+
+@router.callback_query(F.data.startswith("ads:adset_edit_budget:"))
+async def cb_adset_edit_budget_ask(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, adset_id, campaign_id = callback.data.split(":")
+    await state.update_data(edit_adset_id=adset_id, edit_adset_campaign_id=campaign_id)
+    await state.set_state(AdsFlow.adset_edit_budget)
+    await callback.message.edit_text("Новий денний бюджет у $ (число, напр. 10):", reply_markup=_cancel_kb())
+    await callback.answer()
+
+
+@router.message(AdsFlow.adset_edit_budget)
+async def fsm_adset_edit_budget(message: Message, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(message.from_user, admin_ids):
+        return
+    budget = _parse_budget(message.text)
+    if budget is None:
+        await message.answer("Бюджет має бути додатним числом, напр. 10. Спробуйте ще раз:", reply_markup=_cancel_kb())
+        return
+    data = await state.get_data()
+    adset_id = data["edit_adset_id"]
+    await state.clear()
+
+    async def send(text):
+        await message.answer(text, reply_markup=_menu_kb())
+
+    result = await _meta_call(send, adsets.update_ad_set, adset_id, daily_budget_cents=int(round(budget * 100)))
+    if result:
+        await message.answer("✅ Бюджет оновлено.", reply_markup=_menu_kb())
+
+
+# --- Створення ad set'а (назва → бюджет → країни → вік → стать → платформи) ---
+
 @router.callback_query(F.data.startswith("ads:new_adset:"))
 async def cb_new_adset(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
     if not _is_admin(callback.from_user, admin_ids):
@@ -359,11 +649,8 @@ async def fsm_adset_name(message: Message, state: FSMContext, admin_ids: list[in
 async def fsm_adset_budget(message: Message, state: FSMContext, admin_ids: list[int]):
     if not _is_admin(message.from_user, admin_ids):
         return
-    try:
-        budget = float((message.text or "").replace(",", "."))
-        if budget <= 0:
-            raise ValueError
-    except ValueError:
+    budget = _parse_budget(message.text)
+    if budget is None:
         await message.answer("Бюджет має бути додатним числом, напр. 10. Спробуйте ще раз:", reply_markup=_cancel_kb())
         return
     await state.update_data(adset_budget=budget)
@@ -379,29 +666,209 @@ async def fsm_adset_countries(message: Message, state: FSMContext, admin_ids: li
     if not countries:
         await message.answer("Вкажіть хоча б одну країну, напр. UA. Спробуйте ще раз:", reply_markup=_cancel_kb())
         return
+    await state.update_data(adset_countries=countries)
+    await state.set_state(AdsFlow.adset_age_min)
+    await message.answer("Мінімальний вік аудиторії (13–65, напр. 18):", reply_markup=_cancel_kb())
+
+
+@router.message(AdsFlow.adset_age_min)
+async def fsm_adset_age_min(message: Message, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(message.from_user, admin_ids):
+        return
+    age_min = _parse_age(message.text)
+    if age_min is None:
+        await message.answer("Вік має бути числом від 13 до 65. Спробуйте ще раз:", reply_markup=_cancel_kb())
+        return
+    await state.update_data(adset_age_min=age_min)
+    await state.set_state(AdsFlow.adset_age_max)
+    await message.answer("Максимальний вік аудиторії (13–65, напр. 65):", reply_markup=_cancel_kb())
+
+
+@router.message(AdsFlow.adset_age_max)
+async def fsm_adset_age_max(message: Message, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(message.from_user, admin_ids):
+        return
+    age_max = _parse_age(message.text)
+    data = await state.get_data()
+    age_min = data["adset_age_min"]
+    if age_max is None or age_max < age_min:
+        await message.answer(
+            f"Вік має бути числом від {age_min} до 65. Спробуйте ще раз:", reply_markup=_cancel_kb()
+        )
+        return
+    await state.update_data(adset_age_max=age_max)
+    await state.set_state(AdsFlow.adset_gender)
+    kb = InlineKeyboardBuilder()
+    for gender, label in GENDER_LABELS.items():
+        kb.button(text=label, callback_data=f"ads:gender:{gender}")
+    kb.button(text="❌ Скасувати", callback_data="ads:cancel")
+    kb.adjust(3, 1)
+    await message.answer("Стать аудиторії:", reply_markup=kb.as_markup())
+
+
+@router.callback_query(AdsFlow.adset_gender, F.data.startswith("ads:gender:"))
+async def cb_adset_gender(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    gender = callback.data.split(":")[2]
+    await state.update_data(adset_gender=gender)
+    await state.set_state(AdsFlow.adset_platforms)
+    kb = InlineKeyboardBuilder()
+    for platform, label in PLATFORM_LABELS.items():
+        kb.button(text=label, callback_data=f"ads:platform:{platform}")
+    kb.button(text="❌ Скасувати", callback_data="ads:cancel")
+    kb.adjust(1)
+    await callback.message.edit_text("Платформи показу:", reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(AdsFlow.adset_platforms, F.data.startswith("ads:platform:"))
+async def cb_adset_platforms(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    platform = callback.data.split(":")[2]
+    platforms = None if platform == "both" else [platform]
+
     data = await state.get_data()
     campaign_id = data["adset_campaign_id"]
     name = data["adset_name"]
     budget = data["adset_budget"]
+    countries = data["adset_countries"]
+    age_min = data["adset_age_min"]
+    age_max = data["adset_age_max"]
+    gender = data["adset_gender"]
     await state.clear()
+    await callback.answer()
 
-    spec = targeting.build_targeting(countries=countries)
+    spec = targeting.build_targeting(
+        countries=countries, age_min=age_min, age_max=age_max, gender=gender, platforms=platforms,
+    )
 
     async def send(text):
-        await message.answer(text, reply_markup=_menu_kb())
+        await callback.message.edit_text(text, reply_markup=_menu_kb())
 
     ad_set = await _meta_call(
         send, adsets.create_ad_set, campaign_id=campaign_id, name=name,
         daily_budget_cents=int(round(budget * 100)), targeting=spec,
     )
     if ad_set:
-        await message.answer(
+        await callback.message.edit_text(
             f"✅ Ad set «{name}» створено, id=<code>{ad_set['id']}</code>, статус PAUSED.",
             reply_markup=_menu_kb(),
         )
 
 
-# ---------- Креатив + оголошення ----------
+# ---------- Оголошення (список і керування) ----------
+
+async def _render_ad_list(callback: CallbackQuery, adset_id: str, campaign_id: str):
+    async def send(text):
+        await callback.message.edit_text(text, reply_markup=_menu_kb())
+
+    rows = await _meta_call(send, ads.list_ads, adset_id)
+    if rows is None:
+        return
+    kb = InlineKeyboardBuilder()
+    for a in rows:
+        kb.button(
+            text=f"{_status_icon(a['status'])} {a['name']}",
+            callback_data=f"ads:ad:{a['id']}:{adset_id}:{campaign_id}",
+        )
+    kb.button(text="➕ Нове оголошення", callback_data=f"ads:new_ad:{adset_id}:{campaign_id}")
+    kb.button(text="🔙 Назад", callback_data=f"ads:adset:{adset_id}:{campaign_id}")
+    kb.adjust(1)
+    header = "<b>Оголошення:</b>" if rows else "Оголошень ще немає в цьому ad set'і."
+    await callback.message.edit_text(header, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("ads:adlist:"))
+async def cb_ad_list(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, adset_id, campaign_id = callback.data.split(":")
+    await _render_ad_list(callback, adset_id, campaign_id)
+    await callback.answer()
+
+
+async def _render_ad_detail(callback: CallbackQuery, ad_id: str, adset_id: str, campaign_id: str):
+    async def send(text):
+        await callback.message.edit_text(text, reply_markup=_menu_kb())
+
+    rows = await _meta_call(send, ads.list_ads, adset_id)
+    if rows is None:
+        return
+    ad = next((a for a in rows if a["id"] == ad_id), None)
+    if ad is None:
+        await callback.message.edit_text("Оголошення не знайдено.", reply_markup=_menu_kb())
+        return
+
+    text = f"<b>{ad['name']}</b>\nСтатус: {ad['status']}"
+    kb = InlineKeyboardBuilder()
+    if ad["status"] == "ACTIVE":
+        kb.button(text="⏸️ Пауза", callback_data=f"ads:ad_pause:{ad_id}:{adset_id}:{campaign_id}")
+    else:
+        kb.button(text="▶️ Запустити", callback_data=f"ads:ad_resume:{ad_id}:{adset_id}:{campaign_id}")
+    kb.button(text="🗑 Видалити", callback_data=f"ads:ad_del_ask:{ad_id}:{adset_id}:{campaign_id}")
+    kb.button(text="🔙 Назад", callback_data=f"ads:adlist:{adset_id}:{campaign_id}")
+    kb.adjust(1)
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("ads:ad:"))
+async def cb_ad_detail(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, ad_id, adset_id, campaign_id = callback.data.split(":")
+    await _render_ad_detail(callback, ad_id, adset_id, campaign_id)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ads:ad_pause:") | F.data.startswith("ads:ad_resume:"))
+async def cb_ad_toggle(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    action, ad_id, adset_id, campaign_id = callback.data.split(":")[1:5]
+    status = "ACTIVE" if action == "ad_resume" else "PAUSED"
+
+    async def send(text):
+        await callback.answer(text, show_alert=True)
+
+    result = await _meta_call(send, ads.set_ad_status, ad_id, status)
+    if result is None:
+        return
+    await callback.answer("✅ Готово")
+    await _render_ad_detail(callback, ad_id, adset_id, campaign_id)
+
+
+@router.callback_query(F.data.startswith("ads:ad_del_ask:"))
+async def cb_ad_delete_ask(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, ad_id, adset_id, campaign_id = callback.data.split(":")
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Так, видалити", callback_data=f"ads:ad_del:{ad_id}:{adset_id}:{campaign_id}")
+    kb.button(text="❌ Ні", callback_data=f"ads:ad:{ad_id}:{adset_id}:{campaign_id}")
+    kb.adjust(1)
+    await callback.message.edit_text("⚠️ Видалити це оголошення? Це незворотньо.", reply_markup=kb.as_markup())
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("ads:ad_del:"))
+async def cb_ad_delete(callback: CallbackQuery, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    _, _, ad_id, adset_id, campaign_id = callback.data.split(":")
+
+    async def send(text):
+        await callback.answer(text, show_alert=True)
+
+    result = await _meta_call(send, ads.set_ad_status, ad_id, "DELETED")
+    if result is None:
+        return
+    await callback.answer("🗑 Видалено")
+    await _render_ad_list(callback, adset_id, campaign_id)
+
+
+# ---------- Створення оголошення (креатив) ----------
 
 @router.callback_query(F.data.startswith("ads:new_ad:"))
 async def cb_new_ad(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):

@@ -76,3 +76,11 @@ def set_ad_status(ad_id: str, status: str) -> Ad:
     ad = Ad(ad_id)
     ad.api_update(params={Ad.Field.status: status})
     return ad
+
+
+def list_ads(ad_set_id: str, account: AdAccount | None = None) -> list[Ad]:
+    account = account or get_ad_account()
+    fields = [Ad.Field.id, Ad.Field.name, Ad.Field.status]
+    return list(account.get_ads(fields=fields, params={"filtering": [{
+        "field": "adset.id", "operator": "EQUAL", "value": ad_set_id,
+    }]}))
