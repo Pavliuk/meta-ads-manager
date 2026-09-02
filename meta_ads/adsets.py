@@ -22,6 +22,7 @@ def create_ad_set(
         AdSet.Field.daily_budget: daily_budget_cents,
         AdSet.Field.billing_event: billing_event,
         AdSet.Field.optimization_goal: optimization_goal,
+        AdSet.Field.bid_strategy: AdSet.BidStrategy.lowest_cost_without_cap,
         AdSet.Field.targeting: targeting,
         AdSet.Field.status: status,
     }
