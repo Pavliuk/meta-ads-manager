@@ -28,6 +28,20 @@ def create_ad_set(
     return account.create_ad_set(params=params)
 
 
+def get_ad_set(ad_set_id: str) -> AdSet:
+    """Пряме отримання одного ad set'а за ID (включно з campaign_id — без списку всіх)."""
+    ad_set = AdSet(ad_set_id)
+    ad_set.api_get(fields=[
+        AdSet.Field.id,
+        AdSet.Field.name,
+        AdSet.Field.status,
+        AdSet.Field.daily_budget,
+        AdSet.Field.optimization_goal,
+        AdSet.Field.campaign_id,
+    ])
+    return ad_set
+
+
 def list_ad_sets(campaign_id: str, account: AdAccount | None = None) -> list[AdSet]:
     account = account or get_ad_account()
     fields = [
@@ -64,3 +78,17 @@ def update_ad_set(
     if params:
         ad_set.api_update(params=params)
     return ad_set
+
+
+def duplicate_ad_set(ad_set_id: str, deep_copy: bool = True) -> str:
+    """Дублює ad set (типово разом з оголошеннями) у тій самій кампанії, статус PAUSED.
+    Повертає ID нового ad set'а."""
+    ad_set = AdSet(ad_set_id)
+    result = ad_set.create_copy(params={
+        "deep_copy": deep_copy,
+        "status_option": AdSet.StatusOption.paused,
+    })
+    new_id = result.get("copied_adset_id") or result.get(AdSet.Field.id)
+    if not new_id:
+        raise RuntimeError("Meta API не повернув ID копії ad set'а.")
+    return new_id

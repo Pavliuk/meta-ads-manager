@@ -78,6 +78,20 @@ def set_ad_status(ad_id: str, status: str) -> Ad:
     return ad
 
 
+def get_ad(ad_id: str) -> Ad:
+    """Пряме отримання одного оголошення за ID (включно з adset_id — без списку всіх)."""
+    ad = Ad(ad_id)
+    ad.api_get(fields=[Ad.Field.id, Ad.Field.name, Ad.Field.status, Ad.Field.adset_id])
+    return ad
+
+
+def update_ad(ad_id: str, name: str) -> Ad:
+    """Перейменовує оголошення."""
+    ad = Ad(ad_id)
+    ad.api_update(params={Ad.Field.name: name})
+    return ad
+
+
 def list_ads(ad_set_id: str, account: AdAccount | None = None) -> list[Ad]:
     account = account or get_ad_account()
     fields = [Ad.Field.id, Ad.Field.name, Ad.Field.status]

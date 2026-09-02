@@ -20,3 +20,17 @@ def init_api(config: Config | None = None) -> Config:
 def get_ad_account(config: Config | None = None) -> AdAccount:
     config = init_api(config)
     return AdAccount(config.ad_account_id)
+
+
+def get_account_info(account: AdAccount | None = None) -> dict:
+    """Базова інформація про рекламний акаунт: назва, валюта, витрачено, баланс."""
+    account = account or get_ad_account()
+    fields = [
+        AdAccount.Field.name,
+        AdAccount.Field.currency,
+        AdAccount.Field.amount_spent,
+        AdAccount.Field.balance,
+        AdAccount.Field.spend_cap,
+    ]
+    account.api_get(fields=fields)
+    return dict(account)

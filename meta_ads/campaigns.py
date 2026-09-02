@@ -41,6 +41,19 @@ def create_campaign(
     return account.create_campaign(params=params)
 
 
+def get_campaign(campaign_id: str) -> Campaign:
+    """Пряме отримання однієї кампанії за ID (без списку всіх)."""
+    campaign = Campaign(campaign_id)
+    campaign.api_get(fields=[
+        Campaign.Field.id,
+        Campaign.Field.name,
+        Campaign.Field.objective,
+        Campaign.Field.status,
+        Campaign.Field.daily_budget,
+    ])
+    return campaign
+
+
 def list_campaigns(account: AdAccount | None = None) -> list[Campaign]:
     account = account or get_ad_account()
     fields = [
@@ -75,3 +88,17 @@ def update_campaign(
     if params:
         campaign.api_update(params=params)
     return campaign
+
+
+def duplicate_campaign(campaign_id: str, deep_copy: bool = True) -> str:
+    """Дублює кампанію (типово разом з ad set'ами й оголошеннями) як нову, статус PAUSED.
+    Повертає ID нової кампанії."""
+    campaign = Campaign(campaign_id)
+    result = campaign.create_copy(params={
+        "deep_copy": deep_copy,
+        "status_option": Campaign.StatusOption.paused,
+    })
+    new_id = result.get("copied_campaign_id") or result.get(Campaign.Field.id)
+    if not new_id:
+        raise RuntimeError("Meta API не повернув ID копії кампанії.")
+    return new_id
