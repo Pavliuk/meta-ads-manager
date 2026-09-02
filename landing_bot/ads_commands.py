@@ -114,8 +114,9 @@ async def _meta_call(send, func, /, *args, **kwargs):
         return await asyncio.to_thread(func, *args, **kwargs)
     except FacebookRequestError as e:
         logger.error(
-            "Meta API error: type=%s code=%s subcode=%s message=%s",
+            "Meta API error: type=%s code=%s subcode=%s message=%s blame_field_specs=%s body=%s",
             e.api_error_type(), e.api_error_code(), e.api_error_subcode(), e.api_error_message(),
+            e.api_blame_field_specs(), e.body(),
         )
         await send(
             f"❌ Meta API [{e.api_error_code()}/{e.api_error_subcode()}]: {e.api_error_message()}"
