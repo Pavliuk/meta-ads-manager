@@ -36,7 +36,11 @@ def create_campaign(
         Campaign.Field.special_ad_categories: [],
     }
     if daily_budget_cents is not None:
+        # Бюджет на рівні кампанії вмикає Campaign Budget Optimization — у цьому режимі
+        # Meta вимагає bid_strategy саме на кампанії (не на ad set'і), інакше створення
+        # ad set'а падає з "Invalid parameter" (потрібна сума ставки).
         params[Campaign.Field.daily_budget] = daily_budget_cents
+        params[Campaign.Field.bid_strategy] = Campaign.BidStrategy.lowest_cost_without_cap
 
     return account.create_campaign(params=params)
 
@@ -84,6 +88,7 @@ def update_campaign(
         params[Campaign.Field.name] = name
     if daily_budget_cents is not None:
         params[Campaign.Field.daily_budget] = daily_budget_cents
+        params[Campaign.Field.bid_strategy] = Campaign.BidStrategy.lowest_cost_without_cap
     campaign = Campaign(campaign_id)
     if params:
         campaign.api_update(params=params)
