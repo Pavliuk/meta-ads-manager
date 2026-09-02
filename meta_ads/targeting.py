@@ -24,6 +24,8 @@ def build_targeting(
         "age_min": age_min,
         "age_max": age_max,
         "publisher_platforms": platforms or ["facebook", "instagram"],
+        # Meta тепер вимагає явно вказати, чи розширювати аудиторію поза заданими
+        "targeting_automation": {"advantage_audience": 0},
     }
     if GENDER_MAP[gender]:
         spec["genders"] = GENDER_MAP[gender]
