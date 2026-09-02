@@ -10,6 +10,7 @@
 попередження замість падіння.
 """
 import asyncio
+import logging
 import tempfile
 
 from aiogram import Bot, F, Router
@@ -25,6 +26,7 @@ from meta_ads import adsets, ads, campaigns, insights, targeting
 from meta_ads.config import load_config as load_meta_config
 
 router = Router(name="ads_commands")
+logger = logging.getLogger(__name__)
 
 DATE_PRESETS = ("today", "last_7d", "last_30d", "last_90d")
 
@@ -71,7 +73,13 @@ async def _meta_call(send, func, /, *args, **kwargs):
     try:
         return await asyncio.to_thread(func, *args, **kwargs)
     except FacebookRequestError as e:
-        await send(f"❌ Meta API: {e.api_error_message()}")
+        logger.error(
+            "Meta API error: type=%s code=%s subcode=%s message=%s",
+            e.api_error_type(), e.api_error_code(), e.api_error_subcode(), e.api_error_message(),
+        )
+        await send(
+            f"❌ Meta API [{e.api_error_code()}/{e.api_error_subcode()}]: {e.api_error_message()}"
+        )
         return None
 
 
