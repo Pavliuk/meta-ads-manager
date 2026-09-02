@@ -1,6 +1,7 @@
 """CRUD-операції над групами оголошень (AdSet) — бюджет, розклад, таргетинг."""
 from facebook_business.adobjects.adaccount import AdAccount
 from facebook_business.adobjects.adset import AdSet
+from facebook_business.adobjects.campaign import Campaign
 
 from meta_ads.client import get_ad_account
 
@@ -19,13 +20,22 @@ def create_ad_set(
     params = {
         AdSet.Field.name: name,
         AdSet.Field.campaign_id: campaign_id,
-        AdSet.Field.daily_budget: daily_budget_cents,
         AdSet.Field.billing_event: billing_event,
         AdSet.Field.optimization_goal: optimization_goal,
-        AdSet.Field.bid_strategy: AdSet.BidStrategy.lowest_cost_without_cap,
         AdSet.Field.targeting: targeting,
         AdSet.Field.status: status,
     }
+
+    # Meta дозволяє бюджет або на кампанії (Campaign Budget Optimization), або на
+    # ad set'і — не на обох одночасно. Якщо кампанія вже має свій бюджет, ad set
+    # не повинен надсилати власний (і бюджет, введений користувачем для ad set'а,
+    # у цьому разі просто не застосовується — керує кампанія).
+    campaign = Campaign(campaign_id)
+    campaign.api_get(fields=[Campaign.Field.daily_budget])
+    if not campaign.get(Campaign.Field.daily_budget):
+        params[AdSet.Field.daily_budget] = daily_budget_cents
+        params[AdSet.Field.bid_strategy] = AdSet.BidStrategy.lowest_cost_without_cap
+
     return account.create_ad_set(params=params)
 
 
