@@ -54,6 +54,48 @@ def create_link_creative(
     return account.create_ad_creative(params=params)
 
 
+def create_lead_creative(
+    lead_form_id: str,
+    message: str,
+    headline: str,
+    page_id: str | None = None,
+    image_hash: str | None = None,
+    config: Config | None = None,
+    account: AdAccount | None = None,
+) -> AdCreative:
+    """Креатив для Instant Form (ціль «Ліди») — тап відкриває форму збору заявок
+    прямо в Facebook/Instagram, без переходу на зовнішній сайт чи бота."""
+    config = config or load_config()
+    page_id = page_id or config.page_id
+    if not page_id:
+        raise ValueError(
+            "Не вказано page_id — потрібна Facebook-сторінка, від імені якої йде оголошення "
+            "(параметр page_id або META_PAGE_ID у .env)."
+        )
+    account = account or get_ad_account()
+
+    link_data = {
+        "link": f"https://www.facebook.com/{page_id}",
+        "message": message,
+        "name": headline,
+        "call_to_action": {
+            "type": "SIGN_UP",
+            "value": {"lead_gen_form_id": lead_form_id},
+        },
+    }
+    if image_hash:
+        link_data["image_hash"] = image_hash
+
+    params = {
+        AdCreative.Field.name: headline,
+        AdCreative.Field.object_story_spec: {
+            "page_id": page_id,
+            "link_data": link_data,
+        },
+    }
+    return account.create_ad_creative(params=params)
+
+
 def create_ad(
     ad_set_id: str,
     name: str,

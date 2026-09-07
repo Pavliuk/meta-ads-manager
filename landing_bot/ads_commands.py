@@ -28,7 +28,7 @@ from aiogram.types import CallbackQuery, Message, User
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from facebook_business.exceptions import FacebookRequestError
 
-from meta_ads import adsets, ads, campaigns, client, insights, targeting
+from meta_ads import adsets, ads, campaigns, client, insights, leads, targeting
 from meta_ads.campaigns import OBJECTIVES
 from meta_ads.config import load_config as load_meta_config
 
@@ -75,6 +75,9 @@ class AdsFlow(StatesGroup):
     adset_edit_budget = State()
 
     ad_link = State()
+    ad_lead_form_choice = State()
+    ad_lead_form_name = State()
+    ad_lead_form_privacy = State()
     ad_message = State()
     ad_headline = State()
     ad_photo = State()
@@ -730,7 +733,18 @@ async def cb_new_adset(callback: CallbackQuery, state: FSMContext, admin_ids: li
     if not _is_admin(callback.from_user, admin_ids):
         return await callback.answer()
     campaign_id = callback.data.split(":")[2]
-    await state.update_data(adset_campaign_id=campaign_id)
+
+    async def send(text):
+        await callback.message.edit_text(text, reply_markup=_menu_kb())
+
+    campaign = await _meta_call(send, campaigns.get_campaign, campaign_id)
+    if campaign is None:
+        return await callback.answer()
+
+    await state.update_data(
+        adset_campaign_id=campaign_id,
+        adset_objective=campaign.get("objective"),
+    )
     await state.set_state(AdsFlow.adset_name)
     await callback.message.edit_text("Введіть назву ad set'а:", reply_markup=_cancel_kb())
     await callback.answer()
@@ -856,6 +870,7 @@ async def _create_ad_set_from_state(callback: CallbackQuery, state: FSMContext, 
     age_max = data["adset_age_max"]
     gender = data["adset_gender"]
     platforms = data["adset_platforms"]
+    objective = data.get("adset_objective")
     await state.clear()
 
     spec = targeting.build_targeting(
@@ -866,9 +881,15 @@ async def _create_ad_set_from_state(callback: CallbackQuery, state: FSMContext, 
     async def send(text):
         await callback.message.edit_text(text, reply_markup=_menu_kb())
 
+    extra: dict = {}
+    if objective == "OUTCOME_LEADS":
+        # Ліди через Instant Form: оптимізація на кількість заявок, форма
+        # відкривається прямо в Facebook/Instagram, а не за посиланням.
+        extra = {"optimization_goal": "LEAD_GENERATION", "destination_type": "ON_AD"}
+
     ad_set = await _meta_call(
         send, adsets.create_ad_set, campaign_id=campaign_id, name=name,
-        daily_budget_cents=int(round(budget * 100)), targeting=spec,
+        daily_budget_cents=int(round(budget * 100)), targeting=spec, **extra,
     )
     if ad_set:
         await callback.message.edit_text(
@@ -1126,15 +1147,119 @@ async def fsm_ad_edit_name(message: Message, state: FSMContext, admin_ids: list[
 
 # ---------- Створення оголошення (креатив) ----------
 
+LEAD_OPTIMIZATION_GOALS = ("LEAD_GENERATION", "QUALITY_LEAD")
+
+
 @router.callback_query(F.data.startswith("ads:new_ad:"))
 async def cb_new_ad(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
     if not _is_admin(callback.from_user, admin_ids):
         return await callback.answer()
     adset_id = callback.data.split(":")[2]
+
+    async def send(text):
+        await callback.message.edit_text(text, reply_markup=_menu_kb())
+
+    ad_set = await _meta_call(send, adsets.get_ad_set, adset_id)
+    if ad_set is None:
+        return await callback.answer()
+
     await state.update_data(ad_adset_id=adset_id)
-    await state.set_state(AdsFlow.ad_link)
-    await callback.message.edit_text("Посилання, на яке веде оголошення:", reply_markup=_cancel_kb())
+
+    if ad_set.get("optimization_goal") in LEAD_OPTIMIZATION_GOALS:
+        await _ask_lead_form(callback.message.edit_text, state)
+    else:
+        await state.set_state(AdsFlow.ad_link)
+        await callback.message.edit_text("Посилання, на яке веде оголошення:", reply_markup=_cancel_kb())
     await callback.answer()
+
+
+async def _ask_lead_form(send_text, state: FSMContext):
+    """Ad set під ціль «Ліди» — оголошення відкриває Instant Form, а не посилання.
+    Пропонує обрати наявну форму на сторінці чи створити нову."""
+    async def warn(text):
+        await send_text(text, reply_markup=_menu_kb())
+
+    try:
+        config = load_meta_config()
+    except RuntimeError as e:
+        await warn(f"⚠️ {e}")
+        return
+    if not config.page_id:
+        await warn("⚠️ Не вказано META_PAGE_ID — для лід-форм потрібна Facebook-сторінка.")
+        return
+
+    forms = await _meta_call(warn, leads.list_lead_forms, config.page_id)
+    if forms is None:
+        return
+
+    await state.set_state(AdsFlow.ad_lead_form_choice)
+    kb = InlineKeyboardBuilder()
+    for f in forms:
+        kb.button(text=f"📋 {f['name']}", callback_data=f"ads:leadform:{f['id']}")
+    kb.button(text="➕ Нова форма", callback_data="ads:leadform_new")
+    kb.button(text="❌ Скасувати", callback_data="ads:cancel")
+    kb.adjust(1)
+    header = "Оберіть Instant Form:" if forms else "Форм ще немає — створимо нову."
+    await send_text(header, reply_markup=kb.as_markup())
+
+
+@router.callback_query(AdsFlow.ad_lead_form_choice, F.data.startswith("ads:leadform:"))
+async def cb_lead_form_pick(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    form_id = callback.data.split(":")[2]
+    await state.update_data(ad_lead_form_id=form_id)
+    await state.set_state(AdsFlow.ad_message)
+    await callback.message.edit_text("Текст оголошення:", reply_markup=_cancel_kb())
+    await callback.answer()
+
+
+@router.callback_query(AdsFlow.ad_lead_form_choice, F.data == "ads:leadform_new")
+async def cb_lead_form_new(callback: CallbackQuery, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(callback.from_user, admin_ids):
+        return await callback.answer()
+    await state.set_state(AdsFlow.ad_lead_form_name)
+    await callback.message.edit_text("Назва нової форми (для внутрішнього використання):", reply_markup=_cancel_kb())
+    await callback.answer()
+
+
+@router.message(AdsFlow.ad_lead_form_name)
+async def fsm_lead_form_name(message: Message, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(message.from_user, admin_ids):
+        return
+    name = (message.text or "").strip()
+    if not name:
+        await message.answer("Назва не може бути порожньою. Спробуйте ще раз:", reply_markup=_cancel_kb())
+        return
+    await state.update_data(lead_form_name=name)
+    await state.set_state(AdsFlow.ad_lead_form_privacy)
+    await message.answer(
+        "Посилання на політику конфіденційності (обов'язкове поле форми Meta):",
+        reply_markup=_cancel_kb(),
+    )
+
+
+@router.message(AdsFlow.ad_lead_form_privacy)
+async def fsm_lead_form_privacy(message: Message, state: FSMContext, admin_ids: list[int]):
+    if not _is_admin(message.from_user, admin_ids):
+        return
+    url = (message.text or "").strip()
+    if not url.startswith("http"):
+        await message.answer("Схоже, це не посилання. Спробуйте ще раз (напр. https://...):", reply_markup=_cancel_kb())
+        return
+    data = await state.get_data()
+    name = data["lead_form_name"]
+    config = load_meta_config()
+
+    async def send(text):
+        await message.answer(text, reply_markup=_menu_kb())
+
+    form = await _meta_call(send, leads.create_lead_form, config.page_id, name, url)
+    if form is None:
+        return
+    await state.update_data(ad_lead_form_id=form["id"])
+    await state.set_state(AdsFlow.ad_message)
+    await message.answer(f"✅ Форму «{name}» створено. Текст оголошення:", reply_markup=_cancel_kb())
 
 
 @router.message(AdsFlow.ad_link)
@@ -1183,7 +1308,8 @@ async def fsm_ad_headline(message: Message, state: FSMContext, admin_ids: list[i
 async def _finish_ad_creation(responder, bot: Bot, state: FSMContext, photo_file_id: str | None):
     data = await state.get_data()
     adset_id = data["ad_adset_id"]
-    link = data["ad_link"]
+    lead_form_id = data.get("ad_lead_form_id")
+    link = data.get("ad_link")
     text = data["ad_message"]
     headline = data["ad_headline"]
     await state.clear()
@@ -1202,9 +1328,15 @@ async def _finish_ad_creation(responder, bot: Bot, state: FSMContext, photo_file
             if image_hash is None:
                 return
 
-    creative = await _meta_call(
-        responder, ads.create_link_creative, link=link, message=text, headline=headline, image_hash=image_hash,
-    )
+    if lead_form_id:
+        creative = await _meta_call(
+            responder, ads.create_lead_creative,
+            lead_form_id=lead_form_id, message=text, headline=headline, image_hash=image_hash,
+        )
+    else:
+        creative = await _meta_call(
+            responder, ads.create_link_creative, link=link, message=text, headline=headline, image_hash=image_hash,
+        )
     if not creative:
         return
     ad = await _meta_call(responder, ads.create_ad, ad_set_id=adset_id, name=headline, creative_id=creative["id"])

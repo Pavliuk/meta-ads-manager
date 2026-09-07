@@ -13,9 +13,12 @@ def create_ad_set(
     targeting: dict,
     optimization_goal: str = "LINK_CLICKS",
     billing_event: str = "IMPRESSIONS",
+    destination_type: str | None = None,
     status: str = "PAUSED",
     account: AdAccount | None = None,
 ) -> AdSet:
+    """destination_type: напр. "ON_AD" — для лід-форм (Instant Forms), коли реклама
+    веде не за посиланням, а відкриває форму збору заявок прямо в Facebook/Instagram."""
     account = account or get_ad_account()
     params = {
         AdSet.Field.name: name,
@@ -25,6 +28,8 @@ def create_ad_set(
         AdSet.Field.targeting: targeting,
         AdSet.Field.status: status,
     }
+    if destination_type:
+        params[AdSet.Field.destination_type] = destination_type
 
     # Meta дозволяє бюджет або на кампанії (Campaign Budget Optimization), або на
     # ad set'і — не на обох одночасно. Якщо кампанія вже має свій бюджет, ad set
