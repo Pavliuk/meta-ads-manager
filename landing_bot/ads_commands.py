@@ -884,8 +884,15 @@ async def _create_ad_set_from_state(callback: CallbackQuery, state: FSMContext, 
     extra: dict = {}
     if objective == "OUTCOME_LEADS":
         # Ліди через Instant Form: оптимізація на кількість заявок, форма
-        # відкривається прямо в Facebook/Instagram, а не за посиланням.
+        # відкривається прямо в Facebook/Instagram, а не за посиланням. Meta
+        # вимагає явно вказати "просуваємий об'єкт" (сторінку) для цього optimization_goal.
+        try:
+            page_id = load_meta_config().page_id
+        except RuntimeError:
+            page_id = None
         extra = {"optimization_goal": "LEAD_GENERATION", "destination_type": "ON_AD"}
+        if page_id:
+            extra["promoted_object"] = {"page_id": page_id}
 
     ad_set = await _meta_call(
         send, adsets.create_ad_set, campaign_id=campaign_id, name=name,
