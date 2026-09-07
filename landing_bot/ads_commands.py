@@ -27,7 +27,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message, User
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from facebook_business.exceptions import FacebookRequestError
-from tabulate import tabulate
 
 from meta_ads import adsets, ads, campaigns, client, insights, targeting
 from meta_ads.campaigns import OBJECTIVES
@@ -1251,6 +1250,72 @@ async def fsm_ad_photo_invalid(message: Message, admin_ids: list[int]):
 
 # ---------- Аналітика (кампанія / ad set / оголошення) ----------
 
+ACTION_LABELS = {
+    "link_click": "Кліки за посиланням",
+    "landing_page_view": "Перегляди сторінки",
+    "omni_landing_page_view": "Перегляди сторінки (усі джерела)",
+    "post_engagement": "Взаємодія з дописом",
+    "page_engagement": "Взаємодія зі сторінкою",
+    "video_view": "Перегляди відео",
+    "like": "Лайки",
+    "comment": "Коментарі",
+    "post_reaction": "Реакції",
+    "onsite_conversion.post_save": "Збереження",
+    "lead": "Ліди",
+}
+
+
+def _action_label(action_type: str) -> str:
+    if action_type in ACTION_LABELS:
+        return ACTION_LABELS[action_type]
+    return action_type.replace(".", " ").replace("_", " ").capitalize()
+
+
+def _fmt_int(raw) -> str:
+    try:
+        return f"{int(float(raw)):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "0" if raw in (None, "") else str(raw)
+
+
+def _fmt_currency_amount(raw, currency: str) -> str:
+    """Insights API повертає spend/cpc уже в основних одиницях валюти (не в центах,
+    на відміну від daily_budget) — тут без ділення на 100."""
+    if raw in (None, ""):
+        return "—"
+    try:
+        amount = float(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+    symbol = CURRENCY_SYMBOLS.get(currency)
+    return f"{symbol}{amount:.2f}" if symbol else f"{amount:.2f} {currency}"
+
+
+def _fmt_insights_text(rows: list[dict], currency: str, period_label: str) -> str:
+    blocks = []
+    for row in rows:
+        name = row.get("campaign_name") or row.get("adset_name") or row.get("ad_name") or "—"
+        ctr = row.get("ctr")
+        ctr_text = f"{float(ctr):.2f}%" if ctr not in (None, "") else "—"
+
+        lines = [
+            f"<b>{name}</b> · {period_label}",
+            f"💰 Витрачено: {_fmt_currency_amount(row.get('spend'), currency)}",
+            f"👁 Покази: {_fmt_int(row.get('impressions'))}",
+            f"🖱 Кліки: {_fmt_int(row.get('clicks'))}",
+            f"📈 CTR: {ctr_text}",
+            f"💵 CPC: {_fmt_currency_amount(row.get('cpc'), currency)}",
+        ]
+        actions = row.get("actions") or []
+        if actions:
+            lines.append("")
+            lines.append("<b>Дії:</b>")
+            for a in actions:
+                lines.append(f"• {_action_label(a.get('action_type', ''))}: {_fmt_int(a.get('value'))}")
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 def _back_target(level: str, object_id: str) -> str:
     prefix = {"campaign": "ads:camp", "adset": "ads:adset", "ad": "ads:ad"}[level]
     return f"{prefix}:{object_id}"
@@ -1288,5 +1353,6 @@ async def cb_insights_show(callback: CallbackQuery, admin_ids: list[int]):
     if not rows:
         await callback.message.edit_text("Даних поки немає.", reply_markup=kb.as_markup())
         return
-    table = tabulate(rows, headers="keys")
-    await callback.message.edit_text(f"<pre>{table}</pre>", reply_markup=kb.as_markup())
+    currency = await _get_currency()
+    text = _fmt_insights_text(rows, currency, DATE_PRESET_LABELS[date_preset])
+    await callback.message.edit_text(text, reply_markup=kb.as_markup())
