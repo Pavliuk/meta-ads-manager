@@ -100,9 +100,12 @@ def update_ad_set(
     return ad_set
 
 
-def duplicate_ad_set(ad_set_id: str, deep_copy: bool = True) -> str:
-    """Дублює ad set (типово разом з оголошеннями) у тій самій кампанії, статус PAUSED.
-    Повертає ID нового ad set'а."""
+def duplicate_ad_set(ad_set_id: str, deep_copy: bool = False) -> str:
+    """Дублює ad set (бюджет, таргетинг, розклад) у тій самій кампанії, статус PAUSED.
+    Повертає ID нового ad set'а. deep_copy=True (копія разом з оголошеннями) наразі
+    не використовується за замовчуванням: Meta сама генерує в скопійованому креативі
+    застаріле поле "standard_enhancements", яке її ж API одразу відхиляє (subcode
+    3858504) — це баг механізму копіювання на боці Meta, не наших параметрів."""
     ad_set = AdSet(ad_set_id)
     result = ad_set.create_copy(params={
         "deep_copy": deep_copy,

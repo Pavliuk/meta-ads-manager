@@ -95,9 +95,12 @@ def update_campaign(
     return campaign
 
 
-def duplicate_campaign(campaign_id: str, deep_copy: bool = True) -> str:
-    """Дублює кампанію (типово разом з ad set'ами й оголошеннями) як нову, статус PAUSED.
-    Повертає ID нової кампанії."""
+def duplicate_campaign(campaign_id: str, deep_copy: bool = False) -> str:
+    """Дублює кампанію (лише сама кампанія, без ad set'ів) як нову, статус PAUSED.
+    Повертає ID нової кампанії. deep_copy=True копіює й ad set'и разом з оголошеннями,
+    але тоді Meta сама генерує в скопійованому креативі застаріле поле
+    "standard_enhancements", яке її ж API одразу відхиляє (subcode 3858504) — це баг
+    механізму копіювання на боці Meta, тому за замовчуванням деталі не копіюються."""
     campaign = Campaign(campaign_id)
     result = campaign.create_copy(params={
         "deep_copy": deep_copy,
